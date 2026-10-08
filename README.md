@@ -28,7 +28,7 @@ What a check is given, `t`, and nothing more:
 
 | | |
 |---|---|
-| `t.api.call(key, input)` | A call by its key, through the api's public gateway, as the check's identity. The check organization is given as `tenantId` wherever a call takes one. Every call of a run carries one W3C trace id. |
+| `t.api.call(key, input)` | A call by its key, through the api's public gateway, as the check's identity. The check organization is given as `tenantId` on every call: the gateway runs an operator's call in the organization its input names. Every call of a run carries one W3C trace id. |
 | `t.api.callParsed(key, input, parse)` | The same, its answer parsed into what the check relies on (a zod schema's `parse`). |
 | `t.http.get(url)` | What a visitor gets, from outside: status, headers, body, redirect, and the certificate judged as a browser would. |
 | `t.cleanup(step)` | An undo step. All of them run after the check, last first, pass or fail. A failing cleanup fails the check. |

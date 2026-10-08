@@ -29,7 +29,7 @@ export class ApiCallError extends Error {
 export interface ApiClientOptions {
     readonly origin: string;
     readonly token?: string;
-    /** The organization the calls run in: given as `tenantId` wherever a call takes one. */
+    /** The organization the calls run in: given as `tenantId` on every call (the gateway's operator override). */
     readonly organization?: string;
     /** W3C trace id of the run: every call is a span of it, so its effects can be found. */
     readonly traceId?: string;
@@ -65,8 +65,10 @@ export class ApiClient {
         const described = (await this.describe()).get(key);
         if (described === undefined) throw new Error(`"${key}" is not exposed on ${this.options.origin}`);
 
-        const takesOrganization = described.input?.properties !== undefined && 'tenantId' in described.input.properties;
-        const params = this.options.organization !== undefined && takesOrganization && input['tenantId'] === undefined
+        // On every call, not only those whose input names it: the gateway runs an operator's call in
+        // the organization its input names, find and get included. Given only where the input listed
+        // `tenantId`, a check's reads ran in the operator's own organization and found nothing.
+        const params = this.options.organization !== undefined && input['tenantId'] === undefined
             ? { ...input, tenantId: this.options.organization }
             : input;
 

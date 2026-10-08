@@ -106,6 +106,8 @@ describe('a run', () => {
         // The organization was made once, owned by whoever runs the checks, and given where a call takes one.
         expect(orgs).toEqual([{ id: 'org-e2e', slug: 'e2e' }]);
         expect(received.find((r) => r.url === '/api/things')?.body).toContain('"tenantId":"org-e2e"');
+        // On every call, reads and deletes too, whether or not the call's input lists it.
+        expect(received.filter((r) => r.method === 'DELETE').every((r) => r.url.includes('tenantId=org-e2e'))).toBe(true);
         expect(received.every((r) => r.url === '/api/_describe' || r.auth === 'Bearer test-token')).toBe(true);
         // One trace for the whole run.
         const traces = new Set(received.filter((r) => r.url !== '/api/_describe').map((r) => r.traceparent?.split('-')[1]));
