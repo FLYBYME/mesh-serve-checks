@@ -44,6 +44,7 @@ export class ApiClient {
     /** What the api exposes, read once. */
     async describe(): Promise<Map<string, DescribedCall>> {
         if (this.calls !== undefined) return this.calls;
+        if (this.options.origin === '') throw new Error('this run has no api (the config names none): use t.exec');
 
         const res = await fetch(`${this.options.origin}/api/_describe`);
         if (!res.ok) throw new Error(`${this.options.origin}/api/_describe answered ${res.status}`);

@@ -11,7 +11,7 @@ import { tsImport } from 'tsx/esm/api';
 import { ApiClient, type ApiStep } from './api.js';
 import { durationMs, type Check } from './check.js';
 import { isChecksConfig, type ChecksConfig, type Identity } from './config.js';
-import { makeContext, type ContextRecord } from './context.js';
+import { makeContext, type ContextRecord, type RunScope } from './context.js';
 
 export interface CheckResult {
     readonly name: string;
@@ -19,6 +19,8 @@ export interface CheckResult {
     readonly ok: boolean;
     readonly ms: number;
     readonly error?: string;
+    /** Not run: a check it needs did not pass (that check's name). */
+    readonly blockedBy?: string;
     readonly cleanupErrors: readonly string[];
     readonly steps: readonly ApiStep[];
     readonly notes: readonly string[];
@@ -29,12 +31,16 @@ export interface RunResult {
     readonly startedAt: string;
     readonly api: string;
     readonly results: readonly CheckResult[];
+    /** Errors of the run's end-of-run cleanups (droplets not removed, and so on). */
+    readonly cleanupErrors: readonly string[];
 }
 
 export interface RunOptions {
     readonly tags?: readonly string[];
     /** Only checks whose name contains this. */
     readonly only?: string;
+    /** Where this run's report goes, instead of the config's `report.file` (a loop keeps every run's). */
+    readonly reportFile?: string;
     readonly onResult?: (result: CheckResult) => void;
 }
 
@@ -51,19 +57,20 @@ export async function run(configFile: string, options: RunOptions = {}): Promise
     const { config, dir } = await loadConfig(configFile);
     const traceId = randomBytes(16).toString('hex');
     const startedAt = new Date().toISOString();
-    const origin = new URL(config.api).origin;
+    const origin = config.api !== undefined ? new URL(config.api).origin : '';
 
     const checks = await findChecks(config, dir);
-    const wanted = checks.filter(({ check }) =>
+    const wanted = inOrder(checks.filter(({ check }) =>
         (options.tags === undefined || options.tags.length === 0 || (check.options.tags ?? []).some((t) => options.tags?.includes(t)))
-        && (options.only === undefined || check.name.includes(options.only)));
+        && (options.only === undefined || check.name.includes(options.only))));
 
     const tokens = new Map<string, string>();
-    const tokenFor = async (name: string): Promise<string> => {
+    const tokenFor = async (name: string): Promise<string | undefined> => {
+        if (origin === '') return undefined;
         const known = tokens.get(name);
         if (known !== undefined) return known;
 
-        const identity = config.identities[name];
+        const identity = config.identities?.[name];
         if (identity === undefined) throw new Error(`no identity "${name}" in the config`);
 
         const token = await resolveIdentity(identity, origin);
@@ -71,27 +78,77 @@ export async function run(configFile: string, options: RunOptions = {}): Promise
         return token;
     };
 
-    const org = config.organization !== undefined
-        ? await ensureOrganization(new ApiClient({ origin, token: await tokenFor('operator'), traceId }), config.organization)
+    const operator = await tokenFor('operator');
+    const org = config.organization !== undefined && operator !== undefined
+        ? await ensureOrganization(new ApiClient({ origin, token: operator, traceId }), config.organization)
         : { id: '', slug: '' };
 
+    const scope: RunScope = { values: new Map(), atEnd: [] };
     const results: CheckResult[] = [];
-    for (const { check, file } of wanted) {
-        const result = await runOne(check, path.relative(dir, file), origin, await tokenFor(check.options.as ?? 'operator'), org, traceId);
-        results.push(result);
-        options.onResult?.(result);
+    let cleanupErrors: string[] = [];
+    try {
+        for (const { check, file } of wanted) {
+            const unmet = (check.options.needs ?? []).find((name) => results.find((r) => r.name === name)?.ok !== true);
+            const result = unmet !== undefined
+                ? blocked(check, path.relative(dir, file), unmet)
+                : await runOne(check, path.relative(dir, file), origin, await tokenFor(check.options.as ?? 'operator'), org, traceId, scope);
+            results.push(result);
+            options.onResult?.(result);
+        }
+    } finally {
+        // What later checks stood on (droplets, a test customer): undone once, last first, always.
+        cleanupErrors = await undo(scope.atEnd);
     }
 
-    const out: RunResult = { traceId, startedAt, api: origin, results };
-    if (config.report?.file !== undefined) await writeFile(path.resolve(dir, config.report.file), `${JSON.stringify(out, null, 2)}\n`);
+    const out: RunResult = { traceId, startedAt, api: origin, results, cleanupErrors };
+    const reportFile = options.reportFile ?? (config.report?.file !== undefined ? path.resolve(dir, config.report.file) : undefined);
+    if (reportFile !== undefined) await writeFile(reportFile, `${JSON.stringify(out, null, 2)}\n`);
 
     return out;
 }
 
-async function runOne(check: Check, file: string, origin: string, token: string, org: { id: string; slug: string }, traceId: string): Promise<CheckResult> {
+function blocked(check: Check, file: string, by: string): CheckResult {
+    return { name: check.name, file, ok: false, ms: 0, blockedBy: by, cleanupErrors: [], steps: [], notes: [] };
+}
+
+/** Each check after the checks it needs, otherwise in file order. A need on a check not in this run is left unmet. */
+function inOrder<T extends { check: Check }>(checks: readonly T[]): T[] {
+    const done: T[] = [];
+    const placing = new Set<string>();
+    const place = (item: T): void => {
+        if (done.includes(item)) return;
+        if (placing.has(item.check.name)) throw new Error(`checks need each other in a circle: ${[...placing, item.check.name].join(' -> ')}`);
+
+        placing.add(item.check.name);
+        for (const name of item.check.options.needs ?? []) {
+            const needed = checks.find((c) => c.check.name === name);
+            if (needed !== undefined) place(needed);
+        }
+        placing.delete(item.check.name);
+        done.push(item);
+    };
+    for (const item of checks) place(item);
+
+    return done;
+}
+
+async function undo(steps: Array<() => Promise<unknown>>): Promise<string[]> {
+    const errors: string[] = [];
+    for (const step of [...steps].reverse()) {
+        try {
+            await step();
+        } catch (err) {
+            errors.push(err instanceof Error ? err.message : String(err));
+        }
+    }
+
+    return errors;
+}
+
+async function runOne(check: Check, file: string, origin: string, token: string | undefined, org: { id: string; slug: string }, traceId: string, scope: RunScope): Promise<CheckResult> {
     const record: ContextRecord = { steps: [], notes: [], cleanups: [] };
-    const api = new ApiClient({ origin, token, traceId, ...(org.id !== '' ? { organization: org.id } : {}), onStep: (s) => record.steps.push(s) });
-    const t = makeContext(api, org, record);
+    const api = new ApiClient({ origin, ...(token !== undefined ? { token } : {}), traceId, ...(org.id !== '' ? { organization: org.id } : {}), onStep: (s) => record.steps.push(s) });
+    const t = makeContext(api, org, record, scope);
     const started = Date.now();
     const limit = durationMs(check.options.timeout, 120_000);
 
@@ -112,14 +169,7 @@ async function runOne(check: Check, file: string, origin: string, token: string,
     const ms = Date.now() - started;
 
     // Last made, first undone; one that fails does not stop the others.
-    const cleanupErrors: string[] = [];
-    for (const step of record.cleanups.reverse()) {
-        try {
-            await step();
-        } catch (err) {
-            cleanupErrors.push(err instanceof Error ? err.message : String(err));
-        }
-    }
+    const cleanupErrors = await undo(record.cleanups);
 
     return {
         name: check.name, file, ok: error === undefined && cleanupErrors.length === 0, ms,

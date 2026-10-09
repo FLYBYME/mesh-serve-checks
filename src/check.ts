@@ -10,6 +10,11 @@ export interface CheckOptions {
     readonly tags?: readonly string[];
     /** How long it may take in all, its cleanup not counted: `30s`, `10m` (default `2m`). */
     readonly timeout?: string;
+    /**
+     * The checks (by name) it stands on: it runs after them, and only when they passed. When one
+     * did not, this one is *blocked* by it, not run -- the report names the broken link.
+     */
+    readonly needs?: readonly string[];
 }
 
 export interface Check {

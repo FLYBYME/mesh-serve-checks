@@ -32,9 +32,18 @@ What a check is given, `t`, and nothing more:
 | `t.api.callParsed(key, input, parse)` | The same, its answer parsed into what the check relies on (a zod schema's `parse`). |
 | `t.http.get(url)` | What a visitor gets, from outside: status, headers, body, redirect, and the certificate judged as a browser would. |
 | `t.cleanup(step)` | An undo step. All of them run after the check, last first, pass or fail. A failing cleanup fails the check. |
+| `t.cleanupAtEnd(step)` | An undo step for what later checks stand on (machines, a test customer): run once after every check of the run, last first, even after a failure. |
+| `t.provide(key, value)` / `t.need(key, parse)` | Hands a value up a chain: what one check made, the next one uses. |
+| `t.exec(command, args, options)` | A command (ssh, an install script, a provider's CLI), for checks that stand a platform up. A non-zero exit fails the check unless `allowFailure`. |
 | `t.until(what, probe, within)` | Waits until `probe` gives a value, or fails naming `what`. |
 | `t.unique(prefix)`, `t.expect(value, what)`, `t.note(line)` | A run-unique name; an assertion; a line in the report. |
 | `t.org` | The organization the check runs in. |
+
+### Chains
+
+A check can stand on others: `check('the site is live', { needs: ['the site is built'] }, ...)`.
+The runner puts every check after the ones it needs; when one of those did not pass, this one is
+**blocked by** it and not run, so a report names the broken link instead of a wall of failures.
 
 ## The config
 
@@ -62,6 +71,15 @@ npx mesh-serve-checks run --config checks.config.ts --tag after-deploy:certs
 
 Exit code 0 only when every check that ran passed, its cleanup included. Run it after a deploy (and
 fail the deploy on it), and on a timer.
+
+A loop, to find what fails only sometimes (standing a platform up from nothing, overnight):
+
+```sh
+npx mesh-serve-checks run --config standup.config.ts --repeat 50 --until 06:00 --report-dir runs/
+```
+
+Each run's report is kept; the loop stops at the time given even with runs left. A config without
+`api` is for checks that stand a platform up before it has one.
 
 ## Roadmap
 

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import http from 'node:http';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { run } from '../src/runner.js';
@@ -113,6 +113,42 @@ describe('a run', () => {
         const traces = new Set(received.filter((r) => r.url !== '/api/_describe').map((r) => r.traceparent?.split('-')[1]));
         expect(traces.size).toBe(1);
         expect(out.results[0]?.steps[0]).toMatchObject({ call: 'thing.create', status: 200, node: 'node-a' });
+    });
+
+    it('runs a chain in the order its checks need, blocks what stands on a failure, and undoes the run at its end', async () => {
+        const chain = await mkdtemp(path.join(os.tmpdir(), 'chain-'));
+        const lib = path.resolve('src/index.ts');
+        const log = path.join(chain, 'log.txt');
+        await writeFile(path.join(chain, 'checks.config.ts'), `
+            import { defineConfig } from '${lib}';
+            export default defineConfig({ checks: ['*.check.ts'] });`);
+        // File order is the reverse of the chain's: the runner orders by needs.
+        await writeFile(path.join(chain, 'a-top.check.ts'), `
+            import { check } from '${lib}';
+            export default check('on top', { needs: ['middle'] }, async () => {});`);
+        await writeFile(path.join(chain, 'b-middle.check.ts'), `
+            import { check } from '${lib}';
+            export default check('middle', { needs: ['bottom'] }, async (t) => {
+                const machine = t.need('machine', (v) => String(v));
+                await t.exec('sh', ['-c', 'echo "middle saw $M" >> "$LOG"'], { env: { M: machine, LOG: '${log}' } });
+                t.cleanupAtEnd(() => t.exec('sh', ['-c', 'echo "undo middle" >> "$LOG"'], { env: { LOG: '${log}' } }));
+                const failed = await t.exec('sh', ['-c', 'exit 3'], { allowFailure: true });
+                t.expect(failed.code, 'exit code').toBe(4);
+            });`);
+        await writeFile(path.join(chain, 'c-bottom.check.ts'), `
+            import { check } from '${lib}';
+            export default check('bottom', {}, async (t) => {
+                t.provide('machine', 'vm-1');
+                t.cleanupAtEnd(() => t.exec('sh', ['-c', 'echo "undo bottom" >> "$LOG"'], { env: { LOG: '${log}' } }));
+            });`);
+
+        const out = await run(path.join(chain, 'checks.config.ts'));
+
+        expect(out.results.map((r) => [r.name, r.ok, r.blockedBy ?? ''])).toEqual([['bottom', true, ''], ['middle', false, ''], ['on top', false, 'middle']]);
+        expect(out.results[1]?.error).toBe('exit code: expected 4, got 3');
+        // Undone once, after every check, last first -- the failure in the middle did not stop it.
+        expect(await readFile(log, 'utf8')).toBe('middle saw vm-1\nundo middle\nundo bottom\n');
+        await rm(chain, { recursive: true, force: true });
     });
 
     it('stops a check that runs out of time', async () => {

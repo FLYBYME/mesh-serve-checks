@@ -11,13 +11,16 @@ export type Identity =
     | { readonly env: string };
 
 export interface ChecksConfig {
-    /** The api's origin, e.g. https://api.example.com. */
-    readonly api: string;
+    /**
+     * The api's origin, e.g. https://api.example.com. None for checks that stand a platform up
+     * before it has an api (they use `t.exec`); `t.api` then refuses every call.
+     */
+    readonly api?: string;
     /** Where the checks are: globs, relative to this file. */
     readonly checks: readonly string[];
     /** The organization checks run in, made by the runner if it is not there. Never a customer's. */
     readonly organization?: { readonly slug: string; readonly name?: string };
-    readonly identities: Readonly<Record<string, Identity>>;
+    readonly identities?: Readonly<Record<string, Identity>>;
     /** Where each run's results are written as JSON, relative to this file. */
     readonly report?: { readonly file?: string };
 }
@@ -28,7 +31,7 @@ export function defineConfig(config: ChecksConfig): ChecksConfig {
 
 export function isChecksConfig(value: unknown): value is ChecksConfig {
     return typeof value === 'object' && value !== null
-        && 'api' in value && typeof value.api === 'string'
+        && (!('api' in value) || typeof value.api === 'string')
         && 'checks' in value && Array.isArray(value.checks)
-        && 'identities' in value && typeof value.identities === 'object' && value.identities !== null;
+        && (!('identities' in value) || (typeof value.identities === 'object' && value.identities !== null));
 }
