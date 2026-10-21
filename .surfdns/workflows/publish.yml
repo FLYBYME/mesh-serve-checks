@@ -1,0 +1,27 @@
+# A vX.Y.Z tag publishes this package to the platform's registry (design/workflows.md,
+# "One way to build" step 4). npm-publish checks the tag is the version and publishes with the
+# job's own token: the registry records the repository, commit and run of each version.
+name: publish
+on:
+  push:
+    tags: ['v*']
+  manual: true
+jobs:
+  publish:
+    image: node:22
+    memory: 4Gi
+    steps:
+      # Dependencies not yet published still install from git: from git.surfdns.net, where the same
+      # repositories live, read with the job's git token. Gone once every one is a version.
+      - name: our repositories from git.surfdns.net
+        run: |
+          git config --global url."https://git.surfdns.net/6ad28cef9a6dc4014d9e4eb6/".insteadOf "ssh://git@github.com/FLYBYME/"
+          git config --global --add url."https://git.surfdns.net/6ad28cef9a6dc4014d9e4eb6/".insteadOf "https://github.com/FLYBYME/"
+          git config --global --add url."https://git.surfdns.net/6ad28cef9a6dc4014d9e4eb6/".insteadOf "git@github.com:FLYBYME/"
+          git config --global http.https://git.surfdns.net/.extraHeader "Authorization: Bearer $GIT_AUTH_TOKEN"
+      - name: install
+        run: npm ci --no-audit --no-fund
+      - name: build
+        run: npm run build:dist --if-present
+      - name: publish
+        uses: npm-publish
