@@ -15,9 +15,11 @@ jobs:
       # repositories live, read with the job's git token. Gone once every one is a version.
       - name: our repositories from git.surfdns.net
         run: |
-          git config --global url."https://git.surfdns.net/6ad28cef9a6dc4014d9e4eb6/".insteadOf "ssh://git@github.com/FLYBYME/"
-          git config --global --add url."https://git.surfdns.net/6ad28cef9a6dc4014d9e4eb6/".insteadOf "https://github.com/FLYBYME/"
-          git config --global --add url."https://git.surfdns.net/6ad28cef9a6dc4014d9e4eb6/".insteadOf "git@github.com:FLYBYME/"
+          # Beside this repository, in its own organization (none named here: a reinstall makes a new one).
+          base="$(dirname "$(git remote get-url origin)")/"
+          git config --global url."$base".insteadOf "ssh://git@github.com/FLYBYME/"
+          git config --global --add url."$base".insteadOf "https://github.com/FLYBYME/"
+          git config --global --add url."$base".insteadOf "git@github.com:FLYBYME/"
           git config --global http.https://git.surfdns.net/.extraHeader "Authorization: Bearer $GIT_AUTH_TOKEN"
       - name: install
         run: npm ci --no-audit --no-fund
